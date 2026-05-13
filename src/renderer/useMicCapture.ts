@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { WORKLET_SOURCE } from './audio-worklet';
 
 const TARGET_RATE = 16000;
-const CHUNK_SEC = 2.5;
-const OVERLAP_SEC = 0.5;
+const CHUNK_SEC = 1.5;
+const OVERLAP_SEC = 0.3;
 
 interface Options {
   onTranscript: (text: string) => void;

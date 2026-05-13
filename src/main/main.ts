@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, session, systemPreferences } from 'electron';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { IPC, type LoadedScript, type LoadedSlides, type LoadedPdf } from '../shared/ipc';
@@ -92,7 +92,27 @@ ipcMain.handle(
   }
 );
 
-app.whenReady().then(createWindow);
+app.whenReady().then(async () => {
+  if (process.platform === 'darwin') {
+    const status = systemPreferences.getMediaAccessStatus('microphone');
+    console.log('[mic] macOS status:', status);
+    if (status !== 'granted') {
+      const ok = await systemPreferences.askForMediaAccess('microphone');
+      console.log('[mic] askForMediaAccess result:', ok);
+    }
+  }
+
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => {
+    if (permission === 'media' || permission === 'mediaKeySystem') return cb(true);
+    cb(false);
+  });
+
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => {
+    return permission === 'media' || permission === 'mediaKeySystem';
+  });
+
+  createWindow();
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

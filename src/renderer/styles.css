@@ -104,6 +104,18 @@ html, body, #root {
 
 .script .chunk.past { color: #5a5f6a; }
 
+.script .chunk .word.read {
+  color: #6d7281;
+  text-decoration: none;
+}
+
+.script .chunk .word.current {
+  background: #f5b342;
+  color: #1a1c20;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
 .slides {
   flex: 1;
   display: flex;
