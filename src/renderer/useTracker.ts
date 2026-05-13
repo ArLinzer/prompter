@@ -42,6 +42,9 @@ export function useTracker() {
     if (!matcherRef.current || !transcriptWindow.trim()) return null;
     const e = await embed(transcriptWindow);
     const r = matcherRef.current.match(e);
+    console.log(
+      `[match] "${transcriptWindow.slice(-60)}" -> chunk#${r.chunkId} raw=${r.rawScore.toFixed(3)} adj=${r.adjustedScore.toFixed(3)} committed=${r.committed}`
+    );
     if (r.committed) setState((s) => ({ ...s, activeId: r.chunkId, lastMatch: r }));
     else setState((s) => ({ ...s, lastMatch: r }));
     return r;

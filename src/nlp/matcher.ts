@@ -11,8 +11,8 @@ export interface MatchOptions {
 export const DEFAULT_OPTS: MatchOptions = {
   localitySigma: 6,
   backwardPenalty: 0.6,
-  minConfidence: 0.35,
-  stickiness: 0.05,
+  minConfidence: 0.25,
+  stickiness: 0.02,
 };
 
 export interface MatchResult {

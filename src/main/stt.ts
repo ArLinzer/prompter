@@ -61,6 +61,8 @@ export function initStt(): Promise<SttInitResult> {
   return initPromise;
 }
 
+const SILENCE_RMS_THRESHOLD = 0.01;
+
 export async function transcribe(pcm16: Int16Array, sampleRate: number): Promise<SttTranscribeResult> {
   if (!initialized) {
     const r = await initStt();
@@ -68,6 +70,11 @@ export async function transcribe(pcm16: Int16Array, sampleRate: number): Promise
   }
 
   const t0 = Date.now();
+
+  const rms = rmsLevel(pcm16);
+  if (rms < SILENCE_RMS_THRESHOLD) {
+    return { text: '', durationMs: Date.now() - t0 };
+  }
   const wav = new WaveFile();
   wav.fromScratch(1, sampleRate, '16', pcm16);
   const wavBuf = wav.toBuffer();
@@ -95,9 +102,23 @@ export async function transcribe(pcm16: Int16Array, sampleRate: number): Promise
     } as any);
     const text = typeof out === 'string' ? cleanWhisperOutput(out) : '';
     return { text, durationMs: Date.now() - t0 };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // nodejs-whisper throws "Transcription failed or produced no output" for silence — treat as empty.
+    if (/no output|failed or produced/i.test(msg)) {
+      return { text: '', durationMs: Date.now() - t0 };
+    }
+    console.error('[stt] transcribe error:', msg);
+    throw e;
   } finally {
     try { rmSync(path); } catch {}
   }
+}
+
+function rmsLevel(pcm: Int16Array): number {
+  let sum = 0;
+  for (let i = 0; i < pcm.length; i++) sum += pcm[i] * pcm[i];
+  return Math.sqrt(sum / pcm.length) / 32768;
 }
 
 function cleanWhisperOutput(raw: string): string {

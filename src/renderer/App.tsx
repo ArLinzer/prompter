@@ -48,6 +48,7 @@ export function App() {
 
   const onTranscript = useCallback(
     (text: string) => {
+      console.log('[transcript]', text);
       const tokens = text.split(/\s+/).filter(Boolean);
       rollingRef.current = [...rollingRef.current, ...tokens].slice(-ROLLING_TOKENS);
       const window = rollingRef.current.join(' ');
