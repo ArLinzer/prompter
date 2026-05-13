@@ -2,9 +2,22 @@ import { app } from 'electron';
 import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { execSync } from 'node:child_process';
 import { WaveFile } from 'wavefile';
 import { nodewhisper } from 'nodejs-whisper';
+import shell from 'shelljs';
 import type { SttInitResult, SttTranscribeResult } from '../shared/ipc';
+
+function resolveNodeBinary(): string {
+  const cmd = process.platform === 'win32' ? 'where node' : 'which node';
+  try {
+    const out = execSync(cmd, { encoding: 'utf-8' }).split(/\r?\n/)[0].trim();
+    if (out) return out;
+  } catch {}
+  return process.platform === 'win32' ? 'node.exe' : '/usr/local/bin/node';
+}
+
+shell.config.execPath = resolveNodeBinary();
 
 const MODEL = (process.env.SCRIPTER_WHISPER_MODEL ?? 'base.en') as
   | 'tiny.en'
