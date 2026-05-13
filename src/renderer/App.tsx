@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTracker } from './useTracker';
-import { useMicCapture } from './useMicCapture';
+import { useMicCapture, type TimedWord } from './useMicCapture';
 import { renderPdfPages } from './pdfRender';
 import { tokenizeChunk, alignWordCursor, alignChunkPrefix } from '../nlp/wordAlign';
 import {
@@ -9,6 +9,7 @@ import {
   type ScriptAlignResult,
   type ScriptWord,
 } from '../nlp/scriptAlign';
+import { useTimedWordQueue } from './useTimedWordQueue';
 
 const ROLLING_TOKENS = 16;
 const DEFAULT_PREDICT_WPS = 150 / 60; // 150 words per minute → 2.5 words/sec
@@ -138,7 +139,22 @@ export function App() {
     [ingest]
   );
 
-  const mic = useMicCapture({ onTranscript, onError: setError });
+  const { state: timedWordState, ingest: ingestTimedWords, reset: resetTimedWords } =
+    useTimedWordQueue();
+
+  const onWords = useCallback(
+    (words: TimedWord[]) => {
+      ingestTimedWords(words);
+    },
+    [ingestTimedWords],
+  );
+
+  const mic = useMicCapture({ onTranscript, onWords, onError: setError });
+
+  // Reset queue when a new script is loaded.
+  useEffect(() => {
+    resetTimedWords();
+  }, [state.chunks, resetTimedWords]);
 
   useEffect(() => {
     const words = tokenizeScriptChunks(state.chunks);
@@ -407,6 +423,8 @@ export function App() {
           {sttStatus}
           {state.ready && ` · chunk#${visualActiveId} · slide ${activeSlide ?? '-'}`}
           {state.lastMatch && state.ready && ` · sim=${state.lastMatch.rawScore.toFixed(2)}`}
+          {timedWordState.total > 0 &&
+            ` · queue=${timedWordState.total}${timedWordState.current ? ` "${timedWordState.current.text}"` : ''}`}
         </div>
       </div>
 
