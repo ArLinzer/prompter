@@ -1,0 +1,14 @@
+[[slide:1]]
+Welcome everyone to our quarterly product review. Today I will walk through three main topics: revenue growth, new feature launches, and customer feedback.
+
+[[slide:2]]
+Let's start with revenue. This quarter we grew thirty two percent year over year, driven primarily by enterprise contracts in the financial services sector. Our average contract value increased from forty thousand to fifty five thousand dollars.
+
+[[slide:3]]
+Now turning to new features. We shipped the real-time collaboration module, the advanced analytics dashboard, and the mobile offline mode. The collaboration module has been adopted by sixty percent of active teams within two weeks of launch.
+
+[[slide:4]]
+On customer feedback, our net promoter score climbed from forty two to fifty eight. The biggest drivers were performance improvements and the new onboarding flow. Customers especially praised the speed of the search experience.
+
+[[slide:5]]
+Looking ahead to next quarter, we plan to invest in AI-powered recommendations, expand into the European market, and double our support team headcount. Thank you, and I am happy to take questions.
