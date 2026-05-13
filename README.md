@@ -58,6 +58,25 @@ SCRIPTER_WHISPER_MODEL=small.en npm run electron:dev
 
 Valid: `tiny.en` (39MB, fastest), `base.en` (140MB, default), `small.en` (460MB, accurate).
 
+### Try with samples
+
+A 5-slide PDF deck + matching script are checked in under `resources/samples/`:
+
+```
+npm run electron:dev
+```
+
+Then in the app:
+1. Click **Load script** → `resources/samples/sample-script.txt`
+2. Click **Load PDF** → `resources/samples/slides.pdf`
+3. **Start tracking**, read the script
+
+To regenerate the sample PDF after editing `scripts/gen-sample-slides.ts`:
+
+```
+npm run gen:samples
+```
+
 ### Script format
 
 Plain text. Embed slide markers anywhere — every chunk after a marker inherits that slide number:
