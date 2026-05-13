@@ -96,12 +96,6 @@ html, body, #root {
   color: #b8c5dd;
 }
 
-.script .chunk.next {
-  background: var(--hit);
-  color: var(--hit-fg);
-  font-weight: 500;
-}
-
 .script .chunk.past { color: #5a5f6a; }
 
 .script .chunk .word.read {

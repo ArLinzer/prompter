@@ -15,7 +15,7 @@ export const DEFAULT_OPTS: MatchOptions = {
   backwardPenalty: 0.6,
   minConfidence: 0.25,
   stickiness: 0.12,
-  advanceMargin: 0.08,
+  advanceMargin: 0.10,
   advanceConfirmations: 3,
 };
 

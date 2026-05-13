@@ -30,6 +30,10 @@ function fuzzyEqual(a: string, b: string): boolean {
   return levenshtein(a, b, maxDist) <= maxDist;
 }
 
+function transcriptTokens(transcript: string): string[] {
+  return transcript.split(/\s+/).map(normalize).filter(Boolean);
+}
+
 export interface ChunkWord {
   text: string;
   start: number;
@@ -55,7 +59,7 @@ export function tokenizeChunk(text: string): ChunkWord[] {
 export function alignWordCursor(chunkWords: ChunkWord[], transcript: string): number {
   const normChunk = chunkWords.map((w) => normalize(w.text)).filter(Boolean);
   if (normChunk.length === 0) return 0;
-  const tt = transcript.split(/\s+/).map(normalize).filter(Boolean);
+  const tt = transcriptTokens(transcript);
   if (tt.length === 0) return 0;
 
   let bestCursor = 0;
@@ -71,15 +75,6 @@ export function alignWordCursor(chunkWords: ChunkWord[], transcript: string): nu
         break;
       }
     }
-    if (found === -1 && cursor < chunkWords.length) {
-      const start = Math.max(0, cursor - 2);
-      for (let i = start; i < chunkWords.length; i++) {
-        if (fuzzyEqual(normChunk[i], t)) {
-          found = i;
-          break;
-        }
-      }
-    }
     if (found !== -1) {
       cursor = found + 1;
       if (cursor > bestCursor) bestCursor = cursor;
@@ -87,4 +82,28 @@ export function alignWordCursor(chunkWords: ChunkWord[], transcript: string): nu
   }
 
   return bestCursor;
+}
+
+/**
+ * Returns how many words from the beginning of a chunk are present, in order,
+ * near the end of the transcript window. This is stricter than alignWordCursor:
+ * it is used to lock onto the next paragraph only when the reader has actually
+ * started that paragraph.
+ */
+export function alignChunkPrefix(chunkWords: ChunkWord[], transcript: string, maxTranscriptTokens = 10): number {
+  const normChunk = chunkWords.map((w) => normalize(w.text)).filter(Boolean);
+  if (normChunk.length === 0) return 0;
+  const tt = transcriptTokens(transcript).slice(-maxTranscriptTokens);
+  if (tt.length === 0) return 0;
+
+  let best = 0;
+  for (let start = 0; start < tt.length; start++) {
+    let cursor = 0;
+    for (let i = start; i < tt.length && cursor < normChunk.length; i++) {
+      if (fuzzyEqual(normChunk[cursor], tt[i])) cursor += 1;
+    }
+    if (cursor > best) best = cursor;
+  }
+
+  return best;
 }

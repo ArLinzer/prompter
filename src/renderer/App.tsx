@@ -2,9 +2,23 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTracker } from './useTracker';
 import { useMicCapture } from './useMicCapture';
 import { renderPdfPages } from './pdfRender';
-import { tokenizeChunk, alignWordCursor } from '../nlp/wordAlign';
+import { tokenizeChunk, alignWordCursor, alignChunkPrefix } from '../nlp/wordAlign';
 
 const ROLLING_TOKENS = 16;
+const DEFAULT_PREDICT_WPS = 150 / 60; // 150 words per minute → 2.5 words/sec
+const MIN_PREDICT_WPS = 1.0;
+const MAX_PREDICT_WPS = 4.5;
+const STOP_COAST_WPS = 0.5;
+const WPS_EMA_ALPHA = 0.3;
+const MIN_ANCHOR_MOVES_FOR_WPS = 2;
+const SILENCE_COAST_AFTER_MS = 2000;
+const MAX_PREDICT_AHEAD = 6; // never predict more than 6 words past the last aligned position
+const MAX_ANCHOR_ADVANCE_PER_TRANSCRIPT = 3;
+const NEXT_PARAGRAPH_LOCK_WORDS = 3;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
 
 function renderWords(text: string, cursor: number): React.ReactNode {
   const words = tokenizeChunk(text);
@@ -33,6 +47,16 @@ export function App() {
   const rollingRef = useRef<string[]>([]);
   const activeRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Predictive word cursor: anchor advances on transcript, rAF interpolates forward.
+  const anchorCursorRef = useRef(0);
+  const anchorTimeRef = useRef(performance.now());
+  const chunkWordCountRef = useRef(0);
+  const hasTranscriptAnchorRef = useRef(false);
+  const wpsRef = useRef(DEFAULT_PREDICT_WPS);
+  const anchorMoveCountRef = useRef(0);
+  const lastTranscriptTimeRef = useRef(performance.now());
+  const rafRef = useRef<number | null>(null);
 
   const handleLoadScript = async () => {
     try {
@@ -70,6 +94,7 @@ export function App() {
   const onTranscript = useCallback(
     (text: string) => {
       console.log('[transcript]', text);
+      lastTranscriptTimeRef.current = performance.now();
       const tokens = text.split(/\s+/).filter(Boolean);
       rollingRef.current = [...rollingRef.current, ...tokens].slice(-ROLLING_TOKENS);
       const window = rollingRef.current.join(' ');
@@ -79,19 +104,92 @@ export function App() {
     [ingest]
   );
 
-  useEffect(() => {
-    setWordCursor(0);
-  }, [state.activeId]);
+  const mic = useMicCapture({ onTranscript, onError: setError });
 
+  // Reset anchor on paragraph change.
+  useEffect(() => {
+    const cur = state.chunks[state.activeId];
+    const words = cur ? tokenizeChunk(cur.text) : [];
+    const seeded = cur ? clamp(alignChunkPrefix(words, rolling), 0, words.length) : 0;
+    chunkWordCountRef.current = words.length;
+    anchorCursorRef.current = seeded;
+    anchorTimeRef.current = performance.now();
+    hasTranscriptAnchorRef.current = seeded > 0;
+    setWordCursor(seeded);
+  }, [state.activeId, state.chunks]);
+
+  // On new transcript: switch promptly if the reader has started the next paragraph,
+  // otherwise re-align against the active chunk and advance anchor if it moved.
   useEffect(() => {
     const cur = state.chunks[state.activeId];
     if (!cur) return;
     const words = tokenizeChunk(cur.text);
-    const c = alignWordCursor(words, rolling);
-    if (c > wordCursor) setWordCursor(c);
-  }, [rolling, state.activeId, state.chunks, wordCursor]);
+    chunkWordCountRef.current = words.length;
+    const aligned = alignWordCursor(words, rolling);
 
-  const mic = useMicCapture({ onTranscript, onError: setError });
+    const nextChunk = state.chunks[state.activeId + 1];
+    if (nextChunk) {
+      const nextWords = tokenizeChunk(nextChunk.text);
+      const nextPrefix = alignChunkPrefix(nextWords, rolling);
+      const currentNearEnd = words.length === 0 || aligned >= Math.max(0, words.length - 2);
+      const requiredPrefix = Math.min(NEXT_PARAGRAPH_LOCK_WORDS, nextWords.length);
+      if (requiredPrefix > 0 && nextPrefix >= requiredPrefix && (currentNearEnd || nextPrefix > NEXT_PARAGRAPH_LOCK_WORDS)) {
+        jumpTo(nextChunk.id);
+        return;
+      }
+    }
+
+    const previousAnchor = anchorCursorRef.current;
+    const cappedAligned = Math.min(aligned, previousAnchor + MAX_ANCHOR_ADVANCE_PER_TRANSCRIPT);
+    if (cappedAligned > previousAnchor) {
+      const now = performance.now();
+      const elapsed = (now - anchorTimeRef.current) / 1000;
+      if (hasTranscriptAnchorRef.current && elapsed > 0.2) {
+        const sampleWps = clamp((cappedAligned - previousAnchor) / elapsed, MIN_PREDICT_WPS, MAX_PREDICT_WPS);
+        wpsRef.current = WPS_EMA_ALPHA * sampleWps + (1 - WPS_EMA_ALPHA) * wpsRef.current;
+        anchorMoveCountRef.current += 1;
+      }
+      anchorCursorRef.current = cappedAligned;
+      anchorTimeRef.current = now;
+      hasTranscriptAnchorRef.current = true;
+    }
+  }, [jumpTo, rolling, state.activeId, state.chunks]);
+
+  // rAF loop: render cursor = anchor + elapsed * WPS, clamped.
+  useEffect(() => {
+    if (!mic.state.listening) {
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+      return;
+    }
+
+    const tick = () => {
+      if (!hasTranscriptAnchorRef.current) {
+        rafRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      const now = performance.now();
+      const elapsed = (now - anchorTimeRef.current) / 1000;
+      const silenceMs = now - lastTranscriptTimeRef.current;
+      const trustedWps = anchorMoveCountRef.current >= MIN_ANCHOR_MOVES_FOR_WPS ? wpsRef.current : DEFAULT_PREDICT_WPS;
+      const coastFactor = silenceMs > SILENCE_COAST_AFTER_MS
+        ? Math.max(0, 1 - (silenceMs - SILENCE_COAST_AFTER_MS) / SILENCE_COAST_AFTER_MS)
+        : 1;
+      const predictWps = Math.max(STOP_COAST_WPS, trustedWps * coastFactor);
+      const predicted = Math.floor(anchorCursorRef.current + elapsed * predictWps);
+      const cap = Math.min(
+        chunkWordCountRef.current,
+        anchorCursorRef.current + MAX_PREDICT_AHEAD
+      );
+      const next = Math.max(0, Math.min(predicted, cap));
+      setWordCursor((prev) => (prev === next ? prev : next));
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+    };
+  }, [mic.state.listening]);
 
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -149,11 +247,9 @@ export function App() {
               const cls =
                 c.id === state.activeId
                   ? 'active'
-                  : c.id === state.activeId + 1
-                    ? 'next'
-                    : c.id < state.activeId
-                      ? 'past'
-                      : '';
+                  : c.id < state.activeId
+                    ? 'past'
+                    : '';
               const isActive = c.id === state.activeId;
               return (
                 <div
