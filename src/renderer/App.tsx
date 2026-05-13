@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTracker } from './useTracker';
 import { useMicCapture, type TimedWord } from './useMicCapture';
 import { renderPdfPages } from './pdfRender';
@@ -10,6 +10,7 @@ import {
   type ScriptWord,
 } from '../nlp/scriptAlign';
 import { useTimedWordQueue } from './useTimedWordQueue';
+import { useTimedScriptCursor } from './useTimedScriptCursor';
 
 const ROLLING_TOKENS = 16;
 const DEFAULT_PREDICT_WPS = 150 / 60; // 150 words per minute → 2.5 words/sec
@@ -139,7 +140,12 @@ export function App() {
     [ingest]
   );
 
-  const { state: timedWordState, ingest: ingestTimedWords, reset: resetTimedWords } =
+  const {
+    state: timedWordState,
+    ingest: ingestTimedWords,
+    reset: resetTimedWords,
+    queueRef: timedWordQueueRef,
+  } =
     useTimedWordQueue();
 
   const onWords = useCallback(
@@ -150,6 +156,7 @@ export function App() {
   );
 
   const mic = useMicCapture({ onTranscript, onWords, onError: setError });
+  const scriptWords = useMemo(() => tokenizeScriptChunks(state.chunks), [state.chunks]);
 
   // Reset queue when a new script is loaded.
   useEffect(() => {
@@ -157,15 +164,21 @@ export function App() {
   }, [state.chunks, resetTimedWords]);
 
   useEffect(() => {
-    const words = tokenizeScriptChunks(state.chunks);
-    scriptWordsRef.current = words;
+    scriptWordsRef.current = scriptWords;
     scriptAlignCursorRef.current = 0;
     stableScriptAlignRef.current = null;
     scriptAlignCandidateRef.current = null;
     scriptAlignLowConfidenceRef.current = 0;
     setScriptAlignDebug(null);
     setStableScriptAlign(null);
-  }, [state.chunks]);
+  }, [scriptWords]);
+
+  const timedScriptCursor = useTimedScriptCursor(
+    scriptWords,
+    timedWordQueueRef,
+    timedWordState.current,
+    { fallbackChunkId: state.activeId },
+  );
 
   const seedScriptAlignCursor = useCallback((chunkId: number) => {
     const firstActiveWord = scriptWordsRef.current.find((word) => word.chunkId === chunkId);
@@ -339,8 +352,9 @@ export function App() {
     }
   }, [rolling, state.activeId]);
 
+  const timedCursorActive = timedScriptCursor?.active === true;
   const scriptAlignVisual = false;
-  const visualActiveId = state.activeId;
+  const visualActiveId = timedCursorActive ? timedScriptCursor.chunkId : state.activeId;
 
   // rAF loop: render cursor = anchor + elapsed * WPS, clamped.
   useEffect(() => {
@@ -385,8 +399,8 @@ export function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowDown') handleJumpTo(Math.min(state.activeId + 1, state.chunks.length - 1));
-      else if (e.key === 'ArrowUp') handleJumpTo(Math.max(state.activeId - 1, 0));
+      if (e.key === 'ArrowDown') handleJumpTo(Math.min(visualActiveId + 1, state.chunks.length - 1));
+      else if (e.key === 'ArrowUp') handleJumpTo(Math.max(visualActiveId - 1, 0));
       else if (e.key === ' ') {
         e.preventDefault();
         mic.state.listening ? mic.stop() : mic.start();
@@ -394,7 +408,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [handleJumpTo, state.activeId, state.chunks.length, mic]);
+  }, [handleJumpTo, visualActiveId, state.chunks.length, mic]);
 
   const activeSlide = state.chunks[visualActiveId]?.slide;
   const slideSrc = activeSlide && slides[activeSlide - 1] ? slides[activeSlide - 1] : null;
@@ -425,6 +439,8 @@ export function App() {
           {state.lastMatch && state.ready && ` · sim=${state.lastMatch.rawScore.toFixed(2)}`}
           {timedWordState.total > 0 &&
             ` · queue=${timedWordState.total}${timedWordState.current ? ` "${timedWordState.current.text}"` : ''}`}
+          {timedScriptCursor &&
+            ` · script=${timedScriptCursor.chunkId}:${timedScriptCursor.localWordIndex} ${timedScriptCursor.confidence.toFixed(2)}${timedCursorActive ? '' : ' warming'}`}
         </div>
       </div>
 
@@ -440,15 +456,24 @@ export function App() {
               const cls =
                 isActive
                   ? 'active'
-                  : c.id < state.activeId
+                  : c.id < visualActiveId
                     ? 'past'
                     : '';
               const alignCls = scriptAlignVisual && isScriptAlignChunk ? (scriptAlignAgrees ? 'align-agree' : 'align-candidate') : '';
               const body = isActive
                 ? renderWords(
                     c.text,
-                    scriptAlignVisual && isScriptAlignChunk ? stableScriptAlign.localIndex : wordCursor,
-                    { currentClass: scriptAlignVisual && isScriptAlignChunk ? 'script-current' : 'current' }
+                    timedCursorActive
+                      ? timedScriptCursor.localWordIndex
+                      : scriptAlignVisual && isScriptAlignChunk
+                        ? stableScriptAlign.localIndex
+                        : wordCursor,
+                    {
+                      currentClass:
+                        timedCursorActive || (scriptAlignVisual && isScriptAlignChunk)
+                          ? 'script-current'
+                          : 'current',
+                    }
                   )
                 : scriptAlignVisual && isScriptAlignChunk
                   ? renderWords(c.text, stableScriptAlign.localIndex, { currentClass: 'shadow-current', showRead: false })
