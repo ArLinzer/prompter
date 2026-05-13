@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "description": "AI presentation scripter — tracks speaker position in script via STT + embeddings",
-  "main": "dist-electron/main.js",
+  "main": "dist-electron/main/main.js",
   "scripts": {
     "proto": "tsx src/prototype/run.ts",
     "dev": "vite",
