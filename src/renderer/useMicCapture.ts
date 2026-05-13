@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { WORKLET_SOURCE } from './audio-worklet';
+import type { WordTiming } from '../shared/ipc';
 
 const TARGET_RATE = 16000;
 const CHUNK_SEC = 1.5;
 const OVERLAP_SEC = 0.3;
 
+export interface TimedWord extends WordTiming {
+  /** absolute wall-clock (renderer performance.now()) at which the word starts */
+  absStartMs: number;
+  absEndMs: number;
+}
+
 interface Options {
   onTranscript: (text: string) => void;
+  onWords?: (words: TimedWord[], chunkStartWallClockMs: number) => void;
   onError?: (msg: string) => void;
 }
 
@@ -18,7 +26,7 @@ interface CaptureState {
   lastLatencyMs: number | null;
 }
 
-export function useMicCapture({ onTranscript, onError }: Options) {
+export function useMicCapture({ onTranscript, onWords, onError }: Options) {
   const [state, setState] = useState<CaptureState>({
     listening: false,
     initError: null,
@@ -34,6 +42,8 @@ export function useMicCapture({ onTranscript, onError }: Options) {
   const bufSamplesRef = useRef(0);
   const sampleRateRef = useRef(48000);
   const busyRef = useRef(false);
+  /** performance.now() of the first sample currently in bufRef */
+  const chunkStartedAtRef = useRef<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,20 +77,46 @@ export function useMicCapture({ onTranscript, onError }: Options) {
     bufRef.current = [new Float32Array(tail)];
     bufSamplesRef.current = tail.length;
 
+    const chunkStartWallClockMs = chunkStartedAtRef.current ?? performance.now() - CHUNK_SEC * 1000;
+    // Next chunk begins where this chunk's emitted (non-overlap) portion ended.
+    const emittedSamples = chunkSamples - overlapSamples;
+    chunkStartedAtRef.current = chunkStartWallClockMs + (emittedSamples / sampleRateRef.current) * 1000;
+
     const downsampled = resampleTo16k(chunk, sampleRateRef.current);
     const pcm = floatToPCM16(downsampled);
 
     busyRef.current = true;
     try {
-      const r = await window.scripter.sttTranscribe(pcm.buffer as ArrayBuffer, TARGET_RATE);
+      const r = await window.scripter.sttTranscribe(
+        pcm.buffer as ArrayBuffer,
+        TARGET_RATE,
+        chunkStartWallClockMs,
+      );
       setState((s) => ({ ...s, lastLatencyMs: r.durationMs }));
       if (r.text) onTranscript(r.text);
+      if (r.words && r.words.length > 0) {
+        const anchor = r.chunkStartWallClockMs ?? chunkStartWallClockMs;
+        const timed: TimedWord[] = r.words.map((w) => ({
+          ...w,
+          absStartMs: anchor + w.startMs,
+          absEndMs: anchor + w.endMs,
+        }));
+        const preview = timed
+          .slice(0, 8)
+          .map((w) => `${w.text}@+${Math.round(w.absStartMs - anchor)}ms`)
+          .join(' ');
+        console.log(
+          `[timed-words] anchor=${anchor.toFixed(0)} count=${timed.length} ` +
+            `${preview}${timed.length > 8 ? ` …+${timed.length - 8}` : ''}`,
+        );
+        onWords?.(timed, anchor);
+      }
     } catch (e) {
       onError?.(e instanceof Error ? e.message : String(e));
     } finally {
       busyRef.current = false;
     }
-  }, [onTranscript, onError]);
+  }, [onTranscript, onWords, onError]);
 
   const start = useCallback(async () => {
     if (!state.ready) return;
@@ -103,6 +139,11 @@ export function useMicCapture({ onTranscript, onError }: Options) {
       const node = new AudioWorkletNode(ctx, 'capture-processor');
       node.port.onmessage = (e) => {
         const samples = e.data as Float32Array;
+        if (chunkStartedAtRef.current == null) {
+          // First sample after start or flush. Approximate first-sample time.
+          const sampleDurationMs = (samples.length / sampleRateRef.current) * 1000;
+          chunkStartedAtRef.current = performance.now() - sampleDurationMs;
+        }
         bufRef.current.push(samples);
         bufSamplesRef.current += samples.length;
         flushChunk();
@@ -125,6 +166,7 @@ export function useMicCapture({ onTranscript, onError }: Options) {
     ctxRef.current = null;
     bufRef.current = [];
     bufSamplesRef.current = 0;
+    chunkStartedAtRef.current = null;
     setState((s) => ({ ...s, listening: false }));
   }, []);
 

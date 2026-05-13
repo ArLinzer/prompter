@@ -8,6 +8,7 @@
     "proto": "tsx src/prototype/run.ts",
     "setup:whisper": "bash scripts/setup-whisper.sh",
     "gen:samples": "tsx scripts/gen-sample-slides.ts",
+    "test": "vitest run",
     "dev": "vite",
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.main.json",
@@ -38,6 +39,7 @@
     "tsx": "^4.19.1",
     "typescript": "^5.6.3",
     "vite": "^5.4.8",
+    "vitest": "^4.1.6",
     "wait-on": "^8.0.1"
   }
 }

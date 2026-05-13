@@ -3,6 +3,12 @@ import { useTracker } from './useTracker';
 import { useMicCapture } from './useMicCapture';
 import { renderPdfPages } from './pdfRender';
 import { tokenizeChunk, alignWordCursor, alignChunkPrefix } from '../nlp/wordAlign';
+import {
+  alignTranscriptToScript,
+  tokenizeScriptChunks,
+  type ScriptAlignResult,
+  type ScriptWord,
+} from '../nlp/scriptAlign';
 
 const ROLLING_TOKENS = 16;
 const DEFAULT_PREDICT_WPS = 150 / 60; // 150 words per minute → 2.5 words/sec
@@ -15,19 +21,26 @@ const SILENCE_COAST_AFTER_MS = 2000;
 const MAX_PREDICT_AHEAD = 6; // never predict more than 6 words past the last aligned position
 const MAX_ANCHOR_ADVANCE_PER_TRANSCRIPT = 3;
 const NEXT_PARAGRAPH_LOCK_WORDS = 3;
+const SCRIPT_ALIGN_DISPLAY_CONFIDENCE = 0.58;
+const SCRIPT_ALIGN_SWITCH_CONFIDENCE = 0.64;
+const SCRIPT_ALIGN_SWITCH_CONFIRMATIONS = 2;
+const SCRIPT_ALIGN_MAX_WORD_ADVANCE = 3;
+const SCRIPT_ALIGN_MAX_WORD_BACKSTEP = 1;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function renderWords(text: string, cursor: number): React.ReactNode {
+function renderWords(text: string, cursor: number, options: { currentClass?: string; showRead?: boolean } = {}): React.ReactNode {
+  const currentClass = options.currentClass ?? 'current';
+  const showRead = options.showRead ?? true;
   const words = tokenizeChunk(text);
   if (words.length === 0) return text;
   const out: React.ReactNode[] = [];
   let prevEnd = 0;
   words.forEach((w, idx) => {
     if (w.start > prevEnd) out.push(text.slice(prevEnd, w.start));
-    const cls = idx < cursor ? 'word read' : idx === cursor ? 'word current' : 'word';
+    const cls = idx === cursor ? `word ${currentClass}` : showRead && idx < cursor ? 'word read' : 'word';
     out.push(
       <span key={idx} className={cls}>
         {w.text}
@@ -39,14 +52,34 @@ function renderWords(text: string, cursor: number): React.ReactNode {
   return out;
 }
 
+interface ScriptAlignDebug {
+  result: ScriptAlignResult;
+  chunkId: number | null;
+  localIndex: number | null;
+  wordText: string | null;
+}
+
+interface StableScriptAlign {
+  chunkId: number;
+  localIndex: number;
+  confidence: number;
+}
+
 export function App() {
   const { state, loadScript, ingest, jumpTo } = useTracker();
   const [slides, setSlides] = useState<string[]>([]);
   const [rolling, setRolling] = useState<string>('');
   const [wordCursor, setWordCursor] = useState(0);
+  const [scriptAlignDebug, setScriptAlignDebug] = useState<ScriptAlignDebug | null>(null);
+  const [stableScriptAlign, setStableScriptAlign] = useState<StableScriptAlign | null>(null);
   const rollingRef = useRef<string[]>([]);
   const activeRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const scriptWordsRef = useRef<ScriptWord[]>([]);
+  const scriptAlignCursorRef = useRef(0);
+  const stableScriptAlignRef = useRef<StableScriptAlign | null>(null);
+  const scriptAlignCandidateRef = useRef<{ chunkId: number; count: number } | null>(null);
+  const scriptAlignLowConfidenceRef = useRef(0);
 
   // Predictive word cursor: anchor advances on transcript, rAF interpolates forward.
   const anchorCursorRef = useRef(0);
@@ -57,6 +90,7 @@ export function App() {
   const anchorMoveCountRef = useRef(0);
   const lastTranscriptTimeRef = useRef(performance.now());
   const rafRef = useRef<number | null>(null);
+  const wordCursorRef = useRef(0);
 
   const handleLoadScript = async () => {
     try {
@@ -106,6 +140,34 @@ export function App() {
 
   const mic = useMicCapture({ onTranscript, onError: setError });
 
+  useEffect(() => {
+    const words = tokenizeScriptChunks(state.chunks);
+    scriptWordsRef.current = words;
+    scriptAlignCursorRef.current = 0;
+    stableScriptAlignRef.current = null;
+    scriptAlignCandidateRef.current = null;
+    scriptAlignLowConfidenceRef.current = 0;
+    setScriptAlignDebug(null);
+    setStableScriptAlign(null);
+  }, [state.chunks]);
+
+  const seedScriptAlignCursor = useCallback((chunkId: number) => {
+    const firstActiveWord = scriptWordsRef.current.find((word) => word.chunkId === chunkId);
+    if (firstActiveWord) scriptAlignCursorRef.current = firstActiveWord.globalIndex;
+  }, []);
+
+  const handleJumpTo = useCallback(
+    (id: number) => {
+      seedScriptAlignCursor(id);
+      stableScriptAlignRef.current = null;
+      scriptAlignCandidateRef.current = null;
+      scriptAlignLowConfidenceRef.current = 0;
+      setStableScriptAlign(null);
+      jumpTo(id);
+    },
+    [jumpTo, seedScriptAlignCursor]
+  );
+
   // Reset anchor on paragraph change.
   useEffect(() => {
     const cur = state.chunks[state.activeId];
@@ -115,6 +177,7 @@ export function App() {
     anchorCursorRef.current = seeded;
     anchorTimeRef.current = performance.now();
     hasTranscriptAnchorRef.current = seeded > 0;
+    wordCursorRef.current = seeded;
     setWordCursor(seeded);
   }, [state.activeId, state.chunks]);
 
@@ -155,6 +218,114 @@ export function App() {
     }
   }, [jumpTo, rolling, state.activeId, state.chunks]);
 
+  useEffect(() => {
+    const scriptWords = scriptWordsRef.current;
+    const transcript = rolling.trim();
+    if (!transcript || scriptWords.length === 0) {
+      setScriptAlignDebug(null);
+      return;
+    }
+
+    const result = alignTranscriptToScript(scriptWords, transcript, {
+      cursorIndex: scriptAlignCursorRef.current,
+      lookBehind: 12,
+      lookAhead: 90,
+      backstepCap: 12,
+    });
+
+    if (result.confidence >= 0.35) {
+      scriptAlignCursorRef.current = result.cursorIndex;
+    }
+
+    const matchedWord = result.matchedScriptIndex != null ? scriptWords[result.matchedScriptIndex] : undefined;
+    const cursorWord = scriptWords[Math.min(result.cursorIndex, scriptWords.length - 1)];
+    const word = matchedWord ?? cursorWord;
+
+    setScriptAlignDebug({
+      result,
+      chunkId: word?.chunkId ?? null,
+      localIndex: word?.localIndex ?? null,
+      wordText: word?.text ?? null,
+    });
+
+    const rawChunkId = word?.chunkId;
+    const rawLocalIndex = word?.localIndex;
+    if (
+      rawChunkId == null ||
+      rawLocalIndex == null ||
+      result.confidence < SCRIPT_ALIGN_DISPLAY_CONFIDENCE ||
+      result.matchedContentTokens < 2
+    ) {
+      scriptAlignLowConfidenceRef.current += 1;
+      if (scriptAlignLowConfidenceRef.current >= 3 && stableScriptAlignRef.current != null) {
+        stableScriptAlignRef.current = null;
+        scriptAlignCandidateRef.current = null;
+        setStableScriptAlign(null);
+      }
+    } else {
+      scriptAlignLowConfidenceRef.current = 0;
+      const previous = stableScriptAlignRef.current;
+      let nextStable: StableScriptAlign | null = previous;
+
+      if (!previous) {
+        const candidate = scriptAlignCandidateRef.current;
+        const count = candidate?.chunkId === rawChunkId ? candidate.count + 1 : 1;
+        scriptAlignCandidateRef.current = { chunkId: rawChunkId, count };
+        if (rawChunkId === state.activeId || count >= SCRIPT_ALIGN_SWITCH_CONFIRMATIONS) {
+          nextStable = { chunkId: rawChunkId, localIndex: rawLocalIndex, confidence: result.confidence };
+        }
+      } else if (previous.chunkId === rawChunkId) {
+        scriptAlignCandidateRef.current = null;
+        const localIndex =
+          rawLocalIndex >= previous.localIndex
+            ? Math.min(rawLocalIndex, previous.localIndex + SCRIPT_ALIGN_MAX_WORD_ADVANCE)
+            : Math.max(rawLocalIndex, previous.localIndex - SCRIPT_ALIGN_MAX_WORD_BACKSTEP);
+        nextStable = { chunkId: rawChunkId, localIndex, confidence: result.confidence };
+      } else {
+        const candidate = scriptAlignCandidateRef.current;
+        const count = candidate?.chunkId === rawChunkId ? candidate.count + 1 : 1;
+        scriptAlignCandidateRef.current = { chunkId: rawChunkId, count };
+        if (result.confidence >= SCRIPT_ALIGN_SWITCH_CONFIDENCE && count >= SCRIPT_ALIGN_SWITCH_CONFIRMATIONS) {
+          nextStable = { chunkId: rawChunkId, localIndex: rawLocalIndex, confidence: result.confidence };
+        }
+      }
+
+      if (
+        nextStable !== previous &&
+        (nextStable?.chunkId !== previous?.chunkId ||
+          nextStable?.localIndex !== previous?.localIndex ||
+          nextStable?.confidence !== previous?.confidence)
+      ) {
+        stableScriptAlignRef.current = nextStable;
+        setStableScriptAlign(nextStable);
+      }
+    }
+
+    if (import.meta.env.DEV) {
+      const uiWord = wordCursorRef.current;
+      const agree = word?.chunkId === state.activeId;
+      console.info(
+        `[dual-sync] ui=${state.activeId}:${uiWord} sa=${word?.chunkId ?? '-'}:${word?.localIndex ?? '-'} ` +
+          `conf=${result.confidence.toFixed(2)} match=${result.matchedContentTokens}/${result.transcriptContentTokens} ` +
+          `agree=${agree ? 'yes' : 'no'} text=${JSON.stringify(transcript)}`
+      );
+      console.debug('[scriptAlign]', {
+        uiChunk: state.activeId,
+        alignChunk: word?.chunkId ?? null,
+        word: word?.localIndex ?? null,
+        text: word?.text ?? null,
+        confidence: Number(result.confidence.toFixed(2)),
+        matched: `${result.matchedTokens}/${result.transcriptTokens}`,
+        cursor: result.cursorIndex,
+        window: `${result.windowStart}-${result.windowEnd}`,
+        transcript,
+      });
+    }
+  }, [rolling, state.activeId]);
+
+  const scriptAlignVisual = false;
+  const visualActiveId = state.activeId;
+
   // rAF loop: render cursor = anchor + elapsed * WPS, clamped.
   useEffect(() => {
     if (!mic.state.listening) {
@@ -182,6 +353,7 @@ export function App() {
         anchorCursorRef.current + MAX_PREDICT_AHEAD
       );
       const next = Math.max(0, Math.min(predicted, cap));
+      wordCursorRef.current = next;
       setWordCursor((prev) => (prev === next ? prev : next));
       rafRef.current = requestAnimationFrame(tick);
     };
@@ -193,12 +365,12 @@ export function App() {
 
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-  }, [state.activeId]);
+  }, [visualActiveId]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowDown') jumpTo(Math.min(state.activeId + 1, state.chunks.length - 1));
-      else if (e.key === 'ArrowUp') jumpTo(Math.max(state.activeId - 1, 0));
+      if (e.key === 'ArrowDown') handleJumpTo(Math.min(state.activeId + 1, state.chunks.length - 1));
+      else if (e.key === 'ArrowUp') handleJumpTo(Math.max(state.activeId - 1, 0));
       else if (e.key === ' ') {
         e.preventDefault();
         mic.state.listening ? mic.stop() : mic.start();
@@ -206,9 +378,9 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [jumpTo, state.activeId, state.chunks.length, mic]);
+  }, [handleJumpTo, state.activeId, state.chunks.length, mic]);
 
-  const activeSlide = state.chunks[state.activeId]?.slide;
+  const activeSlide = state.chunks[visualActiveId]?.slide;
   const slideSrc = activeSlide && slides[activeSlide - 1] ? slides[activeSlide - 1] : null;
 
   const sttStatus = !mic.state.ready
@@ -233,7 +405,7 @@ export function App() {
         <div className="spacer" />
         <div className="status">
           {sttStatus}
-          {state.ready && ` · chunk#${state.activeId} · slide ${activeSlide ?? '-'}`}
+          {state.ready && ` · chunk#${visualActiveId} · slide ${activeSlide ?? '-'}`}
           {state.lastMatch && state.ready && ` · sim=${state.lastMatch.rawScore.toFixed(2)}`}
         </div>
       </div>
@@ -244,22 +416,35 @@ export function App() {
           <div className="script">
             {state.chunks.length === 0 && <div style={{ color: 'var(--muted)' }}>No script loaded. Click "Load script".</div>}
             {state.chunks.map((c) => {
+              const isActive = c.id === visualActiveId;
+              const isScriptAlignChunk = stableScriptAlign?.chunkId === c.id;
+              const scriptAlignAgrees = scriptAlignVisual && stableScriptAlign?.chunkId === state.activeId;
               const cls =
-                c.id === state.activeId
+                isActive
                   ? 'active'
                   : c.id < state.activeId
                     ? 'past'
                     : '';
-              const isActive = c.id === state.activeId;
+              const alignCls = scriptAlignVisual && isScriptAlignChunk ? (scriptAlignAgrees ? 'align-agree' : 'align-candidate') : '';
+              const body = isActive
+                ? renderWords(
+                    c.text,
+                    scriptAlignVisual && isScriptAlignChunk ? stableScriptAlign.localIndex : wordCursor,
+                    { currentClass: scriptAlignVisual && isScriptAlignChunk ? 'script-current' : 'current' }
+                  )
+                : scriptAlignVisual && isScriptAlignChunk
+                  ? renderWords(c.text, stableScriptAlign.localIndex, { currentClass: 'shadow-current', showRead: false })
+                  : c.text;
               return (
                 <div
                   key={c.id}
                   ref={isActive ? activeRef : null}
-                  className={`chunk ${cls}`}
-                  onClick={() => jumpTo(c.id)}
+                  className={`chunk ${cls} ${alignCls}`}
+                  onClick={() => handleJumpTo(c.id)}
                 >
+                  {scriptAlignVisual && isScriptAlignChunk && !scriptAlignAgrees && <span className="align-badge">ScriptAlign</span>}
                   {c.slide != null && <span style={{ opacity: 0.5, fontSize: '0.7em' }}>[slide {c.slide}] </span>}
-                  {isActive ? renderWords(c.text, wordCursor) : c.text}
+                  {body}
                 </div>
               );
             })}
@@ -274,9 +459,24 @@ export function App() {
         </div>
       </div>
 
-      <div className="transcript">
-        {mic.state.listening ? '🎙 ' : '○ '}
-        {error ? `⚠ ${error}` : rolling || 'idle — press Space or click Start tracking'}
+      <div className="bottom-bar">
+        <div className="transcript">
+          {mic.state.listening ? '🎙 ' : '○ '}
+          {error ? `⚠ ${error}` : rolling || 'idle — press Space or click Start tracking'}
+        </div>
+        {scriptAlignDebug && (
+          <div
+            className={`align-debug ${scriptAlignDebug.chunkId === state.activeId ? 'agree' : 'diverge'}`}
+            title={`word: ${scriptAlignDebug.wordText ?? '-'} · window ${scriptAlignDebug.result.windowStart}-${scriptAlignDebug.result.windowEnd}`}
+          >
+            <span>ScriptAlign</span>
+            <span>ui #{state.activeId}</span>
+            <span>sa #{scriptAlignDebug.chunkId ?? '-'}</span>
+            <span>word {scriptAlignDebug.localIndex ?? '-'}</span>
+            <span>conf {scriptAlignDebug.result.confidence.toFixed(2)}</span>
+            <span>match {scriptAlignDebug.result.matchedTokens}/{scriptAlignDebug.result.transcriptTokens}</span>
+          </div>
+        )}
       </div>
     </div>
   );

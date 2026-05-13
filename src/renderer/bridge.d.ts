@@ -13,7 +13,11 @@ declare global {
       loadSlides: () => Promise<LoadedSlides | null>;
       loadPdf: () => Promise<LoadedPdf | null>;
       sttInit: () => Promise<SttInitResult>;
-      sttTranscribe: (pcm: ArrayBuffer, sampleRate: number) => Promise<SttTranscribeResult>;
+      sttTranscribe: (
+        pcm: ArrayBuffer,
+        sampleRate: number,
+        chunkStartWallClockMs?: number,
+      ) => Promise<SttTranscribeResult>;
       embedTexts: (texts: string[]) => Promise<number[][]>;
       embedText: (text: string) => Promise<number[]>;
     };

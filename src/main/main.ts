@@ -86,10 +86,13 @@ ipcMain.handle(IPC.EMBED_TEXT, async (_evt, text: string) => {
 
 ipcMain.handle(
   IPC.STT_TRANSCRIBE,
-  async (_evt, payload: { pcm: ArrayBuffer; sampleRate: number }) => {
+  async (
+    _evt,
+    payload: { pcm: ArrayBuffer; sampleRate: number; chunkStartWallClockMs?: number },
+  ) => {
     const pcm = new Int16Array(payload.pcm);
-    return transcribe(pcm, payload.sampleRate);
-  }
+    return transcribe(pcm, payload.sampleRate, payload.chunkStartWallClockMs);
+  },
 );
 
 app.whenReady().then(async () => {
