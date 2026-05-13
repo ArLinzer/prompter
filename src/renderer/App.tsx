@@ -14,8 +14,15 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
 
   const handleLoadScript = async () => {
-    const r = await window.scripter.loadScript();
-    if (r) await loadScript(r.text);
+    try {
+      const r = await window.scripter.loadScript();
+      console.log('[app] loadScript IPC returned:', r ? { path: r.path, len: r.text.length } : null);
+      if (r) await loadScript(r.text);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[app] handleLoadScript failed:', e);
+      setError(msg);
+    }
   };
 
   const [slidesLoading, setSlidesLoading] = useState(false);

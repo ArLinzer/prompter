@@ -22,11 +22,20 @@ export function useTracker() {
   });
 
   const loadScript = useCallback(async (text: string) => {
+    console.log('[tracker] loadScript text len:', text.length);
     const chunks = chunkScript(text);
+    console.log('[tracker] chunked:', chunks.length, chunks.slice(0, 2));
     setState((s) => ({ ...s, chunks, ready: false, embedding: true, activeId: 0 }));
-    const embeds = await embedBatch(chunks.map((c) => c.text));
-    matcherRef.current = new Matcher(chunks, embeds);
-    setState((s) => ({ ...s, ready: true, embedding: false }));
+    try {
+      const embeds = await embedBatch(chunks.map((c) => c.text));
+      console.log('[tracker] embedded ok, dim:', embeds[0]?.length);
+      matcherRef.current = new Matcher(chunks, embeds);
+      setState((s) => ({ ...s, ready: true, embedding: false }));
+    } catch (e) {
+      console.error('[tracker] embed failed:', e);
+      setState((s) => ({ ...s, ready: false, embedding: false }));
+      throw e;
+    }
   }, []);
 
   const ingest = useCallback(async (transcriptWindow: string) => {
