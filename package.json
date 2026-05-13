@@ -6,6 +6,7 @@
   "main": "dist-electron/main/main.js",
   "scripts": {
     "proto": "tsx src/prototype/run.ts",
+    "setup:whisper": "bash scripts/setup-whisper.sh",
     "dev": "vite",
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.main.json",
