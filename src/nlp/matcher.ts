@@ -12,7 +12,7 @@ export const DEFAULT_OPTS: MatchOptions = {
   localitySigma: 6,
   backwardPenalty: 0.6,
   minConfidence: 0.25,
-  stickiness: 0.02,
+  stickiness: 0.12,
 };
 
 export interface MatchResult {
@@ -24,6 +24,8 @@ export interface MatchResult {
 
 export class Matcher {
   private cursor = 0;
+  private pendingId: number | null = null;
+  private pendingCount = 0;
   private opts: MatchOptions;
 
   constructor(
@@ -40,6 +42,8 @@ export class Matcher {
 
   setPosition(id: number): void {
     this.cursor = id;
+    this.pendingId = null;
+    this.pendingCount = 0;
   }
 
   match(transcriptEmbed: Float32Array): MatchResult {
@@ -55,11 +59,30 @@ export class Matcher {
       if (adj > best.adj) best = { id: i, raw, adj };
     }
 
-    const committed = best.raw >= this.opts.minConfidence;
-    if (committed) this.cursor = best.id;
+    const aboveConf = best.raw >= this.opts.minConfidence;
+    let committed = false;
+
+    if (aboveConf) {
+      if (best.id === this.cursor) {
+        committed = true;
+        this.pendingId = null;
+        this.pendingCount = 0;
+      } else if (best.id === this.pendingId) {
+        this.pendingCount += 1;
+        if (this.pendingCount >= 2) {
+          this.cursor = best.id;
+          this.pendingId = null;
+          this.pendingCount = 0;
+          committed = true;
+        }
+      } else {
+        this.pendingId = best.id;
+        this.pendingCount = 1;
+      }
+    }
 
     return {
-      chunkId: best.id,
+      chunkId: this.cursor,
       rawScore: best.raw,
       adjustedScore: best.adj,
       committed,

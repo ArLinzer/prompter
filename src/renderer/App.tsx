@@ -3,7 +3,7 @@ import { useTracker } from './useTracker';
 import { useMicCapture } from './useMicCapture';
 import { renderPdfPages } from './pdfRender';
 
-const ROLLING_TOKENS = 32;
+const ROLLING_TOKENS = 8;
 
 export function App() {
   const { state, loadScript, ingest, jumpTo } = useTracker();
@@ -61,7 +61,7 @@ export function App() {
   const mic = useMicCapture({ onTranscript, onError: setError });
 
   useEffect(() => {
-    activeRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    activeRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }, [state.activeId]);
 
   useEffect(() => {
@@ -112,17 +112,27 @@ export function App() {
           <div className="pane-header">Script ({state.chunks.length} chunks)</div>
           <div className="script">
             {state.chunks.length === 0 && <div style={{ color: 'var(--muted)' }}>No script loaded. Click "Load script".</div>}
-            {state.chunks.map((c) => (
-              <div
-                key={c.id}
-                ref={c.id === state.activeId ? activeRef : null}
-                className={`chunk ${c.id === state.activeId ? 'active' : c.id < state.activeId ? 'past' : ''}`}
-                onClick={() => jumpTo(c.id)}
-              >
-                {c.slide != null && <span style={{ opacity: 0.5, fontSize: '0.7em' }}>[slide {c.slide}] </span>}
-                {c.text}
-              </div>
-            ))}
+            {state.chunks.map((c) => {
+              const cls =
+                c.id === state.activeId
+                  ? 'active'
+                  : c.id === state.activeId + 1
+                    ? 'next'
+                    : c.id < state.activeId
+                      ? 'past'
+                      : '';
+              return (
+                <div
+                  key={c.id}
+                  ref={c.id === state.activeId ? activeRef : null}
+                  className={`chunk ${cls}`}
+                  onClick={() => jumpTo(c.id)}
+                >
+                  {c.slide != null && <span style={{ opacity: 0.5, fontSize: '0.7em' }}>[slide {c.slide}] </span>}
+                  {c.text}
+                </div>
+              );
+            })}
           </div>
         </div>
 

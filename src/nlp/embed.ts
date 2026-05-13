@@ -1,7 +1,31 @@
 import { pipeline, env, type FeatureExtractionPipeline } from '@xenova/transformers';
 
-env.allowLocalModels = true;
+env.allowLocalModels = false;
 env.allowRemoteModels = true;
+env.useBrowserCache = true;
+
+console.log('[embed] env:', {
+  allowLocal: env.allowLocalModels,
+  allowRemote: env.allowRemoteModels,
+  remoteHost: env.remoteHost,
+  remotePathTemplate: env.remotePathTemplate,
+  localModelPath: env.localModelPath,
+});
+
+if (typeof window !== 'undefined') {
+  const origFetch = window.fetch;
+  window.fetch = async (...args: Parameters<typeof fetch>) => {
+    const url = typeof args[0] === 'string' ? args[0] : (args[0] as Request).url ?? String(args[0]);
+    if (url.includes('huggingface') || url.includes('MiniLM') || url.includes('onnx') || url.includes('Xenova')) {
+      console.log('[embed-fetch]', url);
+    }
+    const r = await origFetch(...args);
+    if (url.includes('huggingface') || url.includes('MiniLM') || url.includes('onnx') || url.includes('Xenova')) {
+      console.log('[embed-fetch-result]', r.status, url);
+    }
+    return r;
+  };
+}
 
 let extractor: FeatureExtractionPipeline | null = null;
 

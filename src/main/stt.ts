@@ -101,7 +101,9 @@ export async function transcribe(pcm16: Int16Array, sampleRate: number): Promise
       },
     } as any);
     const text = typeof out === 'string' ? cleanWhisperOutput(out) : '';
-    return { text, durationMs: Date.now() - t0 };
+    const durationMs = Date.now() - t0;
+    if (text) console.log(`[stt] ${durationMs}ms rms=${rms.toFixed(3)} text=${JSON.stringify(text)}`);
+    return { text, durationMs };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     // nodejs-whisper throws "Transcription failed or produced no output" for silence — treat as empty.
@@ -122,10 +124,10 @@ function rmsLevel(pcm: Int16Array): number {
 }
 
 function cleanWhisperOutput(raw: string): string {
-  // nodejs-whisper returns lines like "[00:00:00.000 --> 00:00:02.000]  text"
   return raw
     .split('\n')
     .map((line) => line.replace(/^\[[^\]]+\]\s*/, '').trim())
+    .map((line) => line.replace(/\[(BLANK_AUDIO|MUSIC|NOISE|SILENCE|inaudible|laughter|applause)\]/gi, '').trim())
     .filter(Boolean)
     .join(' ')
     .trim();

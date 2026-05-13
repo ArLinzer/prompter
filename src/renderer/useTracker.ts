@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { chunkScript, type ScriptChunk } from '../nlp/chunk';
-import { embed, embedBatch } from '../nlp/embed';
 import { Matcher, type MatchResult } from '../nlp/matcher';
 
 export interface TrackerState {
@@ -24,10 +23,11 @@ export function useTracker() {
   const loadScript = useCallback(async (text: string) => {
     console.log('[tracker] loadScript text len:', text.length);
     const chunks = chunkScript(text);
-    console.log('[tracker] chunked:', chunks.length, chunks.slice(0, 2));
+    console.log('[tracker] chunked:', chunks.length);
     setState((s) => ({ ...s, chunks, ready: false, embedding: true, activeId: 0 }));
     try {
-      const embeds = await embedBatch(chunks.map((c) => c.text));
+      const raw = await window.scripter.embedTexts(chunks.map((c) => c.text));
+      const embeds = raw.map((arr) => new Float32Array(arr));
       console.log('[tracker] embedded ok, dim:', embeds[0]?.length);
       matcherRef.current = new Matcher(chunks, embeds);
       setState((s) => ({ ...s, ready: true, embedding: false }));
@@ -40,13 +40,13 @@ export function useTracker() {
 
   const ingest = useCallback(async (transcriptWindow: string) => {
     if (!matcherRef.current || !transcriptWindow.trim()) return null;
-    const e = await embed(transcriptWindow);
+    const raw = await window.scripter.embedText(transcriptWindow);
+    const e = new Float32Array(raw);
     const r = matcherRef.current.match(e);
     console.log(
       `[match] "${transcriptWindow.slice(-60)}" -> chunk#${r.chunkId} raw=${r.rawScore.toFixed(3)} adj=${r.adjustedScore.toFixed(3)} committed=${r.committed}`
     );
-    if (r.committed) setState((s) => ({ ...s, activeId: r.chunkId, lastMatch: r }));
-    else setState((s) => ({ ...s, lastMatch: r }));
+    setState((s) => (s.activeId === r.chunkId ? { ...s, lastMatch: r } : { ...s, activeId: r.chunkId, lastMatch: r }));
     return r;
   }, []);
 

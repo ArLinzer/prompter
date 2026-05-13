@@ -8,4 +8,6 @@ contextBridge.exposeInMainWorld('scripter', {
   sttInit: () => ipcRenderer.invoke(IPC.STT_INIT),
   sttTranscribe: (pcm: ArrayBuffer, sampleRate: number) =>
     ipcRenderer.invoke(IPC.STT_TRANSCRIBE, { pcm, sampleRate }),
+  embedTexts: (texts: string[]) => ipcRenderer.invoke(IPC.EMBED_TEXTS, texts),
+  embedText: (text: string) => ipcRenderer.invoke(IPC.EMBED_TEXT, text),
 });

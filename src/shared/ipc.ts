@@ -4,6 +4,8 @@ export const IPC = {
   LOAD_PDF: 'scripter:loadPdf',
   STT_INIT: 'scripter:sttInit',
   STT_TRANSCRIBE: 'scripter:sttTranscribe',
+  EMBED_TEXTS: 'scripter:embedTexts',
+  EMBED_TEXT: 'scripter:embedText',
 } as const;
 
 export interface LoadedScript {

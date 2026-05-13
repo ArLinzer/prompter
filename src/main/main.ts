@@ -3,6 +3,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { IPC, type LoadedScript, type LoadedSlides, type LoadedPdf } from '../shared/ipc';
 import { initStt, transcribe } from './stt';
+import { embedText, embedTexts } from './embed';
 
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
 
@@ -16,6 +17,12 @@ function createWindow(): void {
       nodeIntegration: false,
       sandbox: false,
     },
+  });
+
+  win.webContents.on('console-message', (_evt, level, message, line, sourceId) => {
+    if (message.startsWith('[match]') || message.startsWith('[transcript]') || message.startsWith('[tracker]') || message.startsWith('[app]')) {
+      console.log(message);
+    }
   });
 
   if (isDev) {
@@ -66,6 +73,16 @@ ipcMain.handle(IPC.LOAD_PDF, async (): Promise<LoadedPdf | null> => {
 });
 
 ipcMain.handle(IPC.STT_INIT, async () => initStt());
+
+ipcMain.handle(IPC.EMBED_TEXTS, async (_evt, texts: string[]) => {
+  const vecs = await embedTexts(texts);
+  return vecs.map((v) => Array.from(v));
+});
+
+ipcMain.handle(IPC.EMBED_TEXT, async (_evt, text: string) => {
+  const v = await embedText(text);
+  return Array.from(v);
+});
 
 ipcMain.handle(
   IPC.STT_TRANSCRIBE,
