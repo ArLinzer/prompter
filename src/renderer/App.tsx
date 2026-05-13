@@ -13,14 +13,14 @@ import { useTimedWordQueue } from './useTimedWordQueue';
 import { useTimedScriptCursor } from './useTimedScriptCursor';
 
 const ROLLING_TOKENS = 16;
-const DEFAULT_PREDICT_WPS = 150 / 60; // 150 words per minute → 2.5 words/sec
-const MIN_PREDICT_WPS = 1.0;
-const MAX_PREDICT_WPS = 4.5;
+const DEFAULT_PREDICT_WPS = 210 / 60; // 210 words per minute → 3.5 words/sec (confident reading)
+const MIN_PREDICT_WPS = 1.5;
+const MAX_PREDICT_WPS = 5.5;
 const STOP_COAST_WPS = 0.5;
 const WPS_EMA_ALPHA = 0.3;
-const MIN_ANCHOR_MOVES_FOR_WPS = 2;
+const MIN_ANCHOR_MOVES_FOR_WPS = 1;
 const SILENCE_COAST_AFTER_MS = 2000;
-const MAX_PREDICT_AHEAD = 6; // never predict more than 6 words past the last aligned position
+const MAX_PREDICT_AHEAD = 4; // small lead past last committed anchor — avoids overshoot
 const MAX_ANCHOR_ADVANCE_PER_TRANSCRIPT = 3;
 const NEXT_PARAGRAPH_LOCK_WORDS = 3;
 const SCRIPT_ALIGN_DISPLAY_CONFIDENCE = 0.58;
@@ -356,6 +356,38 @@ export function App() {
   const scriptAlignVisual = false;
   const visualActiveId = timedCursorActive ? timedScriptCursor.chunkId : state.activeId;
 
+  // On each script-cursor commit: snap the anchor to truth (where the user
+  // actually was when whisper transcribed the playback word). Inter-commit
+  // rAF prediction then leads forward at most MAX_PREDICT_AHEAD words at
+  // adaptive WPS. No projection at commit-time — projecting causes overshoot
+  // when whisper is wrong about a word; snapping keeps the cursor anchored
+  // to ground truth and only the small forward lead can be off.
+  useEffect(() => {
+    if (!timedCursorActive || !timedScriptCursor) return;
+    const idx = timedScriptCursor.localWordIndex;
+    const prev = anchorCursorRef.current;
+    const now = performance.now();
+    if (timedScriptCursor.chunkId !== state.activeId) {
+      jumpTo(timedScriptCursor.chunkId);
+      return;
+    }
+
+    if (idx > prev) {
+      const elapsed = (now - anchorTimeRef.current) / 1000;
+      if (hasTranscriptAnchorRef.current && elapsed > 0.2) {
+        const sampleWps = clamp((idx - prev) / elapsed, MIN_PREDICT_WPS, MAX_PREDICT_WPS);
+        wpsRef.current = WPS_EMA_ALPHA * sampleWps + (1 - WPS_EMA_ALPHA) * wpsRef.current;
+        anchorMoveCountRef.current += 1;
+      }
+      anchorCursorRef.current = idx;
+      anchorTimeRef.current = now;
+      hasTranscriptAnchorRef.current = true;
+    } else if (idx < prev - SCRIPT_ALIGN_MAX_WORD_BACKSTEP) {
+      anchorCursorRef.current = idx;
+      anchorTimeRef.current = now;
+    }
+  }, [timedScriptCursor, timedCursorActive, state.activeId, jumpTo]);
+
   // rAF loop: render cursor = anchor + elapsed * WPS, clamped.
   useEffect(() => {
     if (!mic.state.listening) {
@@ -463,11 +495,9 @@ export function App() {
               const body = isActive
                 ? renderWords(
                     c.text,
-                    timedCursorActive
-                      ? timedScriptCursor.localWordIndex
-                      : scriptAlignVisual && isScriptAlignChunk
-                        ? stableScriptAlign.localIndex
-                        : wordCursor,
+                    // Always read from rAF-smoothed wordCursor; the timed-script-cursor
+                    // commits feed anchorCursorRef so rAF interpolates between commits.
+                    wordCursor,
                     {
                       currentClass:
                         timedCursorActive || (scriptAlignVisual && isScriptAlignChunk)

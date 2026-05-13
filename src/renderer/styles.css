@@ -111,6 +111,11 @@ html, body, #root {
 
 .script .chunk.past { color: #5a5f6a; }
 
+.script .chunk .word {
+  transition: background-color 180ms ease-out, color 180ms ease-out;
+  border-radius: 3px;
+}
+
 .script .chunk .word.read {
   color: #6d7281;
   text-decoration: none;
@@ -119,14 +124,12 @@ html, body, #root {
 .script .chunk .word.current {
   background: #f5b342;
   color: #1a1c20;
-  border-radius: 3px;
   padding: 0 2px;
 }
 
 .script .chunk .word.script-current {
   background: #72c58b;
   color: #08130c;
-  border-radius: 3px;
   padding: 0 2px;
 }
 
